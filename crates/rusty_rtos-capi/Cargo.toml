@@ -1,0 +1,25 @@
+[package]
+name = "rusty_rtos-capi"
+description = "The FreeRTOS C ABI over the Kairos kernel: xTaskCreate, xQueueSend, xSemaphoreTake, xTimerCreate and the rest as extern C symbols with generated FreeRTOS.h-compatible headers, so a C program relinks and the unmodified C demo tasks pass."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+readme = "../../README.md"
+documentation = "https://docs.rs/rusty_rtos-capi"
+keywords = ["rtos", "freertos", "embedded", "no-std", "remade-with-rust"]
+categories = ["embedded", "no-std", "os"]
+
+[features]
+default = ["std"]
+std = ["rusty_rtos-capi-core/std"]
+alloc = ["rusty_rtos-capi-core/alloc"]
+
+[dependencies]
+rusty_rtos-capi-core = { workspace = true }
+
+[lints]
+workspace = true
