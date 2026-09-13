@@ -1,0 +1,50 @@
+# K6's first cell: the UNMODIFIED C demo task, on the Kairos kernel.
+#
+# Its own cargo project and its own workspace, like every firmware here.
+[package]
+name = "mps2-an385-qemu-capi"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# The C ABI under test.
+rusty_rtos-capi-core = { path = "../../crates/rusty_rtos-capi-core", default-features = false }
+
+# The kernel it sits on, and the port that gives a C task a real stack.
+rusty_rtos_kernel-core = { path = "../../../rusty_rtos_kernel/crates/rusty_rtos_kernel-core", default-features = false }
+rusty_rtos_core = { path = "../../../rusty_rtos_core/crates/rusty_rtos_core", default-features = false }
+rusty_rtos_port-cortex-m = { path = "../../../rusty_rtos_port/crates/rusty_rtos_port-cortex-m" }
+# `pvPortMalloc` is K4's heap_4 remake, not a new allocator: the demos call
+# it, and the one we have was diffed against `heap_4.c` over 20,000 ops.
+rusty_rtos_heap-core = { path = "../../../rusty_rtos_heap/crates/rusty_rtos_heap-core", default-features = false }
+
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+cortex-m-semihosting = "0.5"
+panic-semihosting = "0.6"
+
+[build-dependencies]
+cc = "1"
+# The header is GENERATED from the same symbol table the seam is written
+# against, so `build.rs` needs the crate that holds it. `std` is on here
+# because this dependency is built for the HOST.
+rusty_rtos-capi-core = { path = "../../crates/rusty_rtos-capi-core" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+overflow-checks = true
+
+[workspace]
+
+[features]
+# Declared so the shared seam's `cfg(feature = "amp")` is a known flag here
+# too. The AMP demo's own cell is the host one: this is an emulated chip and
+# the demo's whole subject is two cores pretending at each other, which the
+# host runs faster and proves identically. Wiring it here as well would be a
+# second copy of the same evidence.
+amp = []

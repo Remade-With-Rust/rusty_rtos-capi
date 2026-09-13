@@ -1,0 +1,38 @@
+# K6's host cell: the SAME unmodified C demo files, on a laptop.
+#
+# `firmware/` is for a chip; this is not one. The cells share `seam/abi.rs`
+# and `seam/demos.rs` and differ only in the port beneath them.
+[package]
+name = "capi-host"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+rusty_rtos-capi-core = { path = "../../crates/rusty_rtos-capi-core" }
+rusty_rtos_kernel-core = { path = "../../../rusty_rtos_kernel/crates/rusty_rtos_kernel-core", default-features = false }
+rusty_rtos_core = { path = "../../../rusty_rtos_core/crates/rusty_rtos_core", default-features = false }
+# The port that gives a C task a real stack on a host: one OS thread each.
+rusty_rtos_port-host = { path = "../../../rusty_rtos_port/crates/rusty_rtos_port-host" }
+# `pvPortMalloc` is K4's heap_4 remake, the same one the QEMU cell uses.
+rusty_rtos_heap-core = { path = "../../../rusty_rtos_heap/crates/rusty_rtos_heap-core", default-features = false }
+
+[build-dependencies]
+cc = "1"
+rusty_rtos-capi-core = { path = "../../crates/rusty_rtos-capi-core" }
+
+[profile.release]
+opt-level = 2
+overflow-checks = true
+
+[workspace]
+
+[features]
+# `MessageBufferAMP.c` in its own binary, because `sbSEND_COMPLETED` is a
+# GLOBAL override: with it in force every other stream-buffer demo changes
+# behaviour and two of them reach a control buffer that does not exist. The
+# oracle solves it the same way, with `-DKAIROS_AMP=1`.
+#
+#   cargo run --release --features amp
+amp = []

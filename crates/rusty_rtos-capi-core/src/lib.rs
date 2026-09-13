@@ -18,8 +18,20 @@ extern crate alloc;
 
 pub use rusty_rtos_core as rtos_core;
 
+pub mod codec;
+pub mod cstr;
+pub mod ctypes;
+pub mod retry;
+pub mod symbols;
+
 /// The names a firmware wants in scope.
 pub mod prelude {
+    pub use crate::codec::{handle_from_c, handle_to_c, item_from_bytes, item_to_bytes};
+    pub use crate::ctypes::{
+        BaseType_t, CopyPosition, ERR_QUEUE_FULL, PD_FAIL, PD_PASS, StackDepth_t, TickType_t,
+        UBaseType_t, pd,
+    };
+    pub use crate::retry::{Blocked, SpinGuard, on_blocked};
     pub use rusty_rtos_core::prelude::*;
 }
 

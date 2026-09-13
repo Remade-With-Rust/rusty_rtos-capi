@@ -1,6 +1,8 @@
 # firmware/
 
-Per-chip example projects for `rusty_rtos-capi`. Each directory here is a **separate
+Per-chip example projects for `rusty_rtos-capi`. Cells that run on a host
+rather than a part live in [`../hosted/`](../hosted/), and share this one's
+seam byte for byte. Each directory here is a **separate
 cargo project**, excluded from the workspace, because every chip needs its own
 target triple, linker script and (for Xtensa parts) its own toolchain. n0's
 iroh-on-ESP32 work and the Janus family both reached the same conclusion: keep
