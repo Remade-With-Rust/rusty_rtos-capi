@@ -852,7 +852,7 @@ fn with_heap<R>(f: impl FnOnce(&mut DemoHeap) -> R) -> R {
 /// ever free. Writing a second one here would have thrown that away.
 #[no_mangle]
 pub extern "C" fn pvPortMalloc(xWantedSize: usize) -> *mut c_void {
-    with_heap(|h| match h.alloc(xWantedSize) {
+    with_heap(|h| match h.alloc(xWantedSize).map(|block| block.offset()) {
         Some(offset) => match h.address_of(offset) {
             Some(p) => p.as_ptr().cast::<c_void>(),
             None => core::ptr::null_mut(),
@@ -870,8 +870,20 @@ pub extern "C" fn vPortFree(pv: *mut c_void) {
     with_heap(|h| {
         // A pointer from somewhere else is refused rather than corrupting
         // the free list; `offset_of` bounds-checks against the arena.
+        //
+        // `free_raw`, NOT `free`, and the difference is the C's type rather
+        // than a shortcut. `Heap4::free` takes a `Block` — offset plus the
+        // generation it was handed out under — so it can refuse a free of a
+        // block that has since been REALLOCATED. `vPortFree( void * )` has
+        // nowhere to put a generation; an address is all the C has, which is
+        // exactly why `heap_4.c` manages only the allocated-bit check itself.
+        //
+        // So a C caller gets what FreeRTOS gives it: a double free is caught,
+        // a stale free is not. A Rust caller gets the stronger guarantee. The
+        // limit is the C's type system, not this heap, and blurring it would
+        // claim an ABI guarantee that cannot be delivered.
         if let Some(offset) = h.offset_of(pv.cast::<u8>()) {
-            h.free(offset);
+            let _ = h.free_raw(offset);
         }
     });
 }
