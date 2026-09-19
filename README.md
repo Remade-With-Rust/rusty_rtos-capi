@@ -6,10 +6,10 @@
 [![docs.rs](https://docs.rs/rusty_rtos-capi/badge.svg)](https://docs.rs/rusty_rtos-capi)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-The **C ABI** for Kairos: unmodified C written against FreeRTOS, compiled by
-your compiler against FreeRTOS's own headers, linking and running on a Rust
-kernel. Nothing is ported, wrapped or regenerated — the C does not know it is
-not talking to FreeRTOS. MIT OR Apache-2.0.
+The C ABI for Kairos. Unmodified C written against FreeRTOS, compiled by your
+compiler against FreeRTOS's own headers, links and runs on a Rust kernel.
+Nothing is ported, wrapped or regenerated: the C does not know it is not
+talking to FreeRTOS.
 
 - **Proven**: **26 demo files** from `Demo/Common/Minimal` in the pinned
   FreeRTOS distribution run together, 25 of them reporting a verdict from their
