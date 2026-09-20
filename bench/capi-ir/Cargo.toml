@@ -1,0 +1,25 @@
+# Instruction counts for the C ABI's marshalling.
+#
+# Every call a C application makes crosses this seam: a handle in, an item in
+# or out, a name in. Nothing counted an instruction here until now, and it is
+# the only SHIPPING surface in the family that had no instrument.
+#
+# A deterministic counter, not a clock: the house rule is that the counter is
+# the verdict and the clock is confirmatory.
+[package]
+name = "capi-ir"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+rusty_rtos-capi-core = { path = "../../crates/rusty_rtos-capi-core", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+debug = true
+
+[workspace]
