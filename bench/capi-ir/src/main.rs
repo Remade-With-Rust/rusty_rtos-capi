@@ -113,13 +113,22 @@ fn main() {
         }
 
         // ---- names --------------------------------------------------------
-        for name in NAMES {
-            let len = strnlen(name, NAME_LIMIT);
-            let text = name_from(name, NAME_LIMIT);
+        //
+        // `name_from` CALLS `strnlen` itself, so asking for both on the same
+        // buffer scans it twice and prices a C call at more than it pays. The
+        // first cut did exactly that. `xTaskCreate` calls `name_from`; the
+        // bare `strnlen` is measured on its own half of the corpus, once, so
+        // both public entry points are covered without either being counted
+        // twice.
+        for (i, name) in NAMES.iter().enumerate() {
             names = names.wrapping_add(1);
-            checksum = checksum
-                .wrapping_add(len as u64)
-                .wrapping_add(text.len() as u64);
+            if i % 2 == 0 {
+                let text = name_from(name, NAME_LIMIT);
+                checksum = checksum.wrapping_add(text.len() as u64);
+            } else {
+                let len = strnlen(name, NAME_LIMIT);
+                checksum = checksum.wrapping_add(len as u64);
+            }
         }
 
         // ---- the blocked decision, both arms ------------------------------
