@@ -46,7 +46,7 @@ use rusty_rtos_core::handle::TaskHandle;
 use rusty_rtos_core::tick::Bits32;
 use rusty_rtos_core::trace::{Event, Trace};
 use rusty_rtos_kernel_core::queue::Wait;
-use rusty_rtos_kernel_core::{items_for, lists_for, Kernel};
+use rusty_rtos_kernel_core::{list_slots_for, lists_for, Kernel};
 use rusty_rtos_port_host::{
     init_task, set_scheduler, start_first_task, HostPort, Ticker, CURRENT, PREEMPTIVE,
 };
@@ -96,6 +96,12 @@ impl Config for CapiConfig {
 #[derive(Debug, Default)]
 struct NoTrace;
 impl Trace for NoTrace {
+// Nothing here reads a task name, so the kernel is told not to build one.
+    // Without this the trait default is `true` and every traced event costs a
+    // name lookup plus a UTF-8 validation for a sink that drops it: measured
+    // at 3.86x on one row (2026-09-21).
+    const WANTS_NAMES: bool = false;
+
     fn event(&mut self, _tick: u64, _event: Event<'_>) {}
 }
 
@@ -189,7 +195,7 @@ pub(crate) type K = Kernel<
     NoTrace,
     CapiTickHook,
     TASKS,
-    { items_for(TASKS, TIMERS) },
+    { list_slots_for(TASKS, TIMERS, lists_for(CapiConfig::MAX_PRIORITIES, QUEUES, GROUPS)) },
     { lists_for(CapiConfig::MAX_PRIORITIES, QUEUES, GROUPS) },
     QUEUES,
     SLOTS,
@@ -1041,6 +1047,7 @@ fn main() {
     // `CapiConfig::TICK_RATE_HZ` is 1000: `pdMS_TO_TICKS` in the C and
     // `delay` in the Rust have to mean the same duration.
     Ticker::new(Duration::from_millis(1), on_tick).spawn();
+
 
     println!(
         "starting the first task ({})...",
