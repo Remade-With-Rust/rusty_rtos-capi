@@ -276,7 +276,7 @@ const SET_ITEM_BYTES: u32 =
 /// one is never NULL -- while a NULL one stays NULL rather than being
 /// manufactured into `1`, which is the same rule `task_to_c` needed.
 fn item_for_c(queue: QueueHandle, value: u64) -> u64 {
-    match IS_SET.get(usize::from(queue.index())) {
+    match IS_SET.get(queue.index() as usize) {
         Some(f) if f.load(Ordering::Relaxed) => rusty_rtos_capi_core::codec::set_item_to_c(value),
         _ => value,
     }
@@ -463,7 +463,7 @@ pub unsafe extern "C" fn xTaskCreate(
         let Some(Ok(handle)) = with_kernel(|k| k.create_task(name, priority)) else {
             return None;
         };
-        let index = usize::from(handle.index());
+        let index = handle.index() as usize;
 
         let Some(entry) = C_ENTRIES.get(index) else {
             return None;
@@ -483,7 +483,7 @@ pub unsafe extern "C" fn xTaskCreate(
         crate::note!(
             "CAPI xTaskCreate {:<18} slot {:<3} asked {} got {:?}",
             name,
-            usize::from(handle.index()),
+            handle.index() as usize,
             uxPriority,
             with_kernel(|k| k.priority_of(Some(handle))).and_then(Result::ok)
         );
@@ -538,7 +538,7 @@ pub extern "C" fn xQueueGenericCreate(
         );
         return core::ptr::null_mut();
     };
-    let Some(size) = ITEM_SIZES.get(usize::from(handle.index())) else {
+    let Some(size) = ITEM_SIZES.get(handle.index() as usize) else {
         return core::ptr::null_mut();
     };
     // `ITEM_SIZES` is `u32` because `MAX_ITEM_BYTES` is eight and
@@ -565,7 +565,7 @@ pub unsafe extern "C" fn xQueueGenericSend(
     let Some(queue) = queue_from_c(xQueue) else {
         return ERR_QUEUE_FULL;
     };
-    let Some(size) = ITEM_SIZES.get(usize::from(queue.index())) else {
+    let Some(size) = ITEM_SIZES.get(queue.index() as usize) else {
         return ERR_QUEUE_FULL;
     };
     // SAFETY: the C side promised `uxItemSize` readable bytes, and
@@ -633,7 +633,7 @@ pub unsafe extern "C" fn xQueueReceive(
     let Some(queue) = queue_from_c(xQueue) else {
         return PD_FAIL;
     };
-    let Some(size) = ITEM_SIZES.get(usize::from(queue.index())) else {
+    let Some(size) = ITEM_SIZES.get(queue.index() as usize) else {
         return PD_FAIL;
     };
     let ticks = u64::from(xTicksToWait);
@@ -799,7 +799,7 @@ pub unsafe extern "C" fn xQueuePeek(
     let Some(queue) = queue_from_c(xQueue) else {
         return PD_FAIL;
     };
-    let Some(size) = ITEM_SIZES.get(usize::from(queue.index())) else {
+    let Some(size) = ITEM_SIZES.get(queue.index() as usize) else {
         return PD_FAIL;
     };
     let ticks = u64::from(xTicksToWait);
@@ -1522,7 +1522,7 @@ pub unsafe extern "C" fn xQueueGenericSendFromISR(
     let Some(q) = queue_from_c(xQueue) else {
         return ERR_QUEUE_FULL;
     };
-    let Some(size) = ITEM_SIZES.get(usize::from(q.index())) else {
+    let Some(size) = ITEM_SIZES.get(q.index() as usize) else {
         return ERR_QUEUE_FULL;
     };
     // SAFETY: the C promised `uxItemSize` readable bytes.
@@ -1563,7 +1563,7 @@ pub unsafe extern "C" fn xQueueReceiveFromISR(
     let Some(q) = queue_from_c(xQueue) else {
         return PD_FAIL;
     };
-    let Some(size) = ITEM_SIZES.get(usize::from(q.index())) else {
+    let Some(size) = ITEM_SIZES.get(q.index() as usize) else {
         return PD_FAIL;
     };
     match with_kernel(|k| k.queue_receive_from_isr(q)) {
@@ -1588,7 +1588,7 @@ pub unsafe extern "C" fn xQueuePeekFromISR(
     let Some(q) = queue_from_c(xQueue) else {
         return PD_FAIL;
     };
-    let Some(size) = ITEM_SIZES.get(usize::from(q.index())) else {
+    let Some(size) = ITEM_SIZES.get(q.index() as usize) else {
         return PD_FAIL;
     };
     match with_kernel(|k| k.queue_peek_from_isr(q)) {
@@ -1695,7 +1695,7 @@ pub extern "C" fn xQueueTakeMutexRecursive(
 pub extern "C" fn xQueueCreateSet(uxEventQueueLength: UBaseType_t) -> *mut c_void {
     match with_kernel(|k| k.queue_create_set(uxEventQueueLength as usize)) {
         Some(Ok(h)) => {
-            let i = usize::from(h.index());
+            let i = h.index() as usize;
             // A set is a queue of handles, so it has an item size like any
             // other queue -- and without one every `xQueuePeek` on it
             // copied ZERO bytes and reported `pdPASS`, leaving the caller's
@@ -1982,7 +1982,7 @@ pub extern "C" fn xStreamBufferGenericCreate(
     match made {
         Some(Ok(h)) => {
             BUFFERS_MADE.fetch_add(1, Ordering::Relaxed);
-            if let Some(flag) = IS_TRIGGER_BUFFER.get(usize::from(h.index())) {
+            if let Some(flag) = IS_TRIGGER_BUFFER.get(h.index() as usize) {
                 flag.store(xBufferSizeBytes == TRIGGER_TEST_BYTES, Ordering::SeqCst);
             }
             stream_to_c(h)
@@ -2085,7 +2085,7 @@ pub unsafe extern "C" fn xStreamBufferReceive(
                         c.fetch_add(1, Ordering::Relaxed);
                     }
                     let trigger = IS_TRIGGER_BUFFER
-                        .get(usize::from(b.index()))
+                        .get(b.index() as usize)
                         .is_some_and(|f| f.load(Ordering::SeqCst));
                     if trigger {
                         if let Some(c) = SB_TRIGGER_BYTES.get(n.min(9)) {
@@ -2380,7 +2380,7 @@ pub fn drain_timer_expiries() {
         EXPIRY_TAIL.store(tail.wrapping_add(1), Ordering::Relaxed);
 
         let timer = rusty_rtos_core::handle::TimerHandle::from_raw(raw);
-        let Some(entry) = TIMER_CALLBACKS.get(usize::from(timer.index())) else {
+        let Some(entry) = TIMER_CALLBACKS.get(timer.index() as usize) else {
             continue;
         };
         let f = entry.load(Ordering::SeqCst);
@@ -2419,10 +2419,10 @@ pub unsafe extern "C" fn xTimerCreate(
     match made {
         Some(Ok(h)) => {
             TIMERS_MADE.fetch_add(1, Ordering::Relaxed);
-            if let Some(slot) = TIMER_CALLBACKS.get(usize::from(h.index())) {
+            if let Some(slot) = TIMER_CALLBACKS.get(h.index() as usize) {
                 slot.store(pxCallbackFunction as usize, Ordering::SeqCst);
             }
-            remember_timer_name(usize::from(h.index()), name);
+            remember_timer_name(h.index() as usize, name);
             timer_to_c(h)
         }
         _ => core::ptr::null_mut(),
@@ -2552,7 +2552,7 @@ pub extern "C" fn pcTimerGetName(xTimer: *mut c_void) -> *const core::ffi::c_cha
         return c"".as_ptr();
     };
     let Some(first) = TIMER_NAMES
-        .get(usize::from(timer.index()))
+        .get(timer.index() as usize)
         .and_then(|buf| buf.first())
     else {
         return c"".as_ptr();

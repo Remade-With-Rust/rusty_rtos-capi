@@ -96,7 +96,7 @@ impl Config for CapiConfig {
 #[derive(Debug, Default)]
 struct NoTrace;
 impl Trace for NoTrace {
-// Nothing here reads a task name, so the kernel is told not to build one.
+    // Nothing here reads a task name, so the kernel is told not to build one.
     // Without this the trait default is `true` and every traced event costs a
     // name lookup plus a UTF-8 validation for a sink that drops it: measured
     // at 3.86x on one row (2026-09-21).
@@ -195,7 +195,13 @@ pub(crate) type K = Kernel<
     NoTrace,
     CapiTickHook,
     TASKS,
-    { list_slots_for(TASKS, TIMERS, lists_for(CapiConfig::MAX_PRIORITIES, QUEUES, GROUPS)) },
+    {
+        list_slots_for(
+            TASKS,
+            TIMERS,
+            lists_for(CapiConfig::MAX_PRIORITIES, QUEUES, GROUPS),
+        )
+    },
     { lists_for(CapiConfig::MAX_PRIORITIES, QUEUES, GROUPS) },
     QUEUES,
     SLOTS,
@@ -203,6 +209,7 @@ pub(crate) type K = Kernel<
     BYTES,
     TIMERS,
     GROUPS,
+    { <CapiConfig as ::rusty_rtos_core::config::Config>::TIMER_QUEUE_LENGTH },
 >;
 
 struct KernelCell(std::cell::UnsafeCell<Option<K>>);
@@ -312,7 +319,7 @@ fn check_identity(kernel: Option<&K>) {
     let (Some(kernel), Some(mine)) = (kernel, rusty_rtos_port_host::my_index()) else {
         return;
     };
-    let believes = usize::from(kernel.current().index());
+    let believes = kernel.current().index() as usize;
     // Once, and loudly. It costs a thread-local read and a compare, and it
     // is the one invariant this port exists to keep: `reconcile` is what
     // keeps it, and a report here means `reconcile` has a hole.
@@ -341,7 +348,7 @@ fn with_kernel_locked<R>(f: impl FnOnce(&mut K) -> R) -> Option<R> {
 /// point of the port: there, a static array and an initial frame; here, an
 /// OS thread, parked until it is granted the run permit.
 pub(crate) fn arm_task(handle: TaskHandle, entry: extern "C" fn(usize) -> !) -> bool {
-    let i = usize::from(handle.index());
+    let i = handle.index() as usize;
     if i >= TASKS || i >= rusty_rtos_port_host::MAX_TASKS {
         return false;
     }
@@ -391,7 +398,7 @@ extern "C" fn pick_next() {
         k.current()
     });
     if let Some(handle) = next {
-        let to = usize::from(handle.index());
+        let to = handle.index() as usize;
         if probe_switches() && to != before {
             let t = std::thread::current();
             eprintln!(
@@ -1048,10 +1055,6 @@ fn main() {
     // `delay` in the Rust have to mean the same duration.
     Ticker::new(Duration::from_millis(1), on_tick).spawn();
 
-
-    println!(
-        "starting the first task ({})...",
-        usize::from(first.index())
-    );
-    start_first_task(usize::from(first.index()));
+    println!("starting the first task ({})...", first.index() as usize);
+    start_first_task(first.index() as usize);
 }

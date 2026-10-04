@@ -47,7 +47,7 @@ use rusty_rtos_core::handle::TaskHandle;
 use rusty_rtos_core::tick::Bits32;
 use rusty_rtos_core::trace::{Event, Trace};
 use rusty_rtos_kernel_core::queue::Wait;
-use rusty_rtos_kernel_core::{items_for, lists_for, Kernel};
+use rusty_rtos_kernel_core::{list_slots_for, lists_for, Kernel};
 use rusty_rtos_port_cortex_m::{
     init_stack, set_scheduler, start_first_task, start_tick, CortexMPort, CURRENT_SP_SLOT,
 };
@@ -87,7 +87,7 @@ impl Config for CapiConfig {
 #[derive(Debug, Default)]
 struct NoTrace;
 impl Trace for NoTrace {
-// Nothing here reads a task name, so the kernel is told not to build one.
+    // Nothing here reads a task name, so the kernel is told not to build one.
     // Without this the trait default is `true` and every traced event costs a
     // name lookup plus a UTF-8 validation for a sink that drops it: measured
     // at 3.86x on one row (2026-09-21).
@@ -177,7 +177,13 @@ pub(crate) type K = Kernel<
     NoTrace,
     CapiTickHook,
     TASKS,
-    { list_slots_for(TASKS, TIMERS, lists_for(CapiConfig::MAX_PRIORITIES, QUEUES, GROUPS)) },
+    {
+        list_slots_for(
+            TASKS,
+            TIMERS,
+            lists_for(CapiConfig::MAX_PRIORITIES, QUEUES, GROUPS),
+        )
+    },
     { lists_for(CapiConfig::MAX_PRIORITIES, QUEUES, GROUPS) },
     QUEUES,
     SLOTS,
@@ -185,6 +191,7 @@ pub(crate) type K = Kernel<
     BYTES,
     TIMERS,
     GROUPS,
+    { <CapiConfig as ::rusty_rtos_core::config::Config>::TIMER_QUEUE_LENGTH },
 >;
 
 /// The kernel, reachable from a task and from `PendSV`.
@@ -282,7 +289,7 @@ extern "C" fn pick_next() {
         k.current()
     });
     if let Some(handle) = next {
-        let i = usize::from(handle.index());
+        let i = handle.index() as usize;
         if let Some(slot) = SLOTS_SP.get(i) {
             // A saved stack pointer must lie inside its OWN task's stack.
             // `PendSV` writes the outgoing task's SP through whatever
@@ -379,7 +386,7 @@ unsafe fn HardFault(ef: &cortex_m_rt::ExceptionFrame) -> ! {
         hfsr,
         mmar,
         bfar,
-        with_kernel_in_exception(|k| k.current()).map(|t| usize::from(t.index()))
+        with_kernel_in_exception(|k| k.current()).map(|t| t.index() as usize)
     );
     // The stack above the frame still holds the return addresses that led
     // here. A fault that branched to 0 has no PC worth reading, so the only
@@ -446,7 +453,7 @@ fn SysTick() {
         let n = SYSTICKS.load(Ordering::Relaxed);
         if n % every == 0 {
             let who = with_kernel_in_exception(|k| k.current())
-                .map(|t| usize::from(t.index()))
+                .map(|t| t.index() as usize)
                 .unwrap_or(usize::MAX);
             hprintln!(
                 "  .. systick={} kernel_tick={} current={}",
@@ -492,7 +499,7 @@ static SYSTICKS: AtomicU32 = AtomicU32::new(0);
 
 /// Give one task a stack and record it in its own slot.
 pub(crate) fn arm_task(handle: TaskHandle, entry: extern "C" fn(usize) -> !) -> bool {
-    let i = usize::from(handle.index());
+    let i = handle.index() as usize;
     let Some(slot) = SLOTS_SP.get(i) else {
         return false;
     };
@@ -520,7 +527,11 @@ pub(crate) fn arm_task(handle: TaskHandle, entry: extern "C" fn(usize) -> !) -> 
             base.add(w).write(STACK_PAINT);
         }
     }
-    slot.store(init_stack(top, entry, i), Ordering::SeqCst);
+    // SAFETY: `top` is one past task `i`'s own `STACK_WORDS`-word stack in
+    // the `STACKS` static -- writable, used by nothing else, and alive for
+    // the program -- and `STACK_WORDS` is far above the sixteen words the
+    // frame takes.
+    slot.store(unsafe { init_stack(top, entry, i) }, Ordering::SeqCst);
     true
 }
 
@@ -1175,7 +1186,7 @@ fn main() -> ! {
     }
 
     let first = with_kernel(|k| k.current()).expect("a current task");
-    let i = usize::from(first.index());
+    let i = first.index() as usize;
     if let Some(slot) = SLOTS_SP.get(i) {
         CURRENT_SP_SLOT.store(core::ptr::from_ref(slot) as usize, Ordering::SeqCst);
     }
