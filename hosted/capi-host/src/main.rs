@@ -90,6 +90,9 @@ impl Config for CapiConfig {
     // 64-bit host, and `MessageBufferDemo.c:262` compares our free space
     // against its own arithmetic and fails on the first message.
     const MESSAGE_LENGTH_BYTES: usize = rusty_rtos_capi_core::ctypes::MESSAGE_LENGTH_BYTES;
+    // `configNUMBER_OF_CORES`, which `FreeRTOSConfig.h` sets from the same
+    // feature (`KAIROS_CAPI_SMP`). See `turns` for what two cores are here.
+    const NUMBER_OF_CORES: u8 = if cfg!(feature = "smp") { 2 } else { 1 };
 }
 
 /// This cell measures whether the C file runs, not what it traced.
@@ -296,13 +299,21 @@ pub(crate) fn where_it_runs(i: usize) -> usize {
 
 /// Borrow the kernel inside the port's critical section.
 pub(crate) fn with_kernel<R>(f: impl FnOnce(&mut K) -> R) -> Option<R> {
-    without_interrupts(|| {
+    let out = without_interrupts(|| {
         // SAFETY: the critical section is held, so the tick thread is not
         // inside the kernel and no other task thread holds the run permit.
         let slot = unsafe { &mut *KERNEL.0.get() };
         check_identity(slot.as_ref());
-        slot.as_mut().map(f)
-    })
+        let out = slot.as_mut().map(f);
+        #[cfg(feature = "smp")]
+        if let Some(k) = slot.as_mut() {
+            turns::collect(k);
+        }
+        out
+    });
+    #[cfg(feature = "smp")]
+    turns::after_call();
+    out
 }
 
 /// The kernel's idea of the running task must be the thread that is
@@ -393,10 +404,13 @@ static TICK_HOOKS: AtomicU64 = AtomicU64::new(0);
 /// The port asks who is next; the kernel answers.
 extern "C" fn pick_next() {
     let before = CURRENT.load(Ordering::SeqCst);
+    #[cfg(not(feature = "smp"))]
     let next = with_kernel_locked(|k| {
         k.switch_context();
         k.current()
     });
+    #[cfg(feature = "smp")]
+    let next = with_kernel_locked(turns::pick);
     if let Some(handle) = next {
         let to = handle.index() as usize;
         if probe_switches() && to != before {
@@ -432,6 +446,10 @@ fn probe_switches() -> bool {
 /// (`vFullDemoTickHookFunction`). Several demos' checkers report failure
 /// if their ISR half never runs.
 extern "C" fn on_tick() -> bool {
+    // Two cores: the tick is core 0's interrupt, as in the C (only core 0
+    // runs `xTaskIncrementTick`; the others are reached by `prvYieldCore`).
+    #[cfg(feature = "smp")]
+    let running_as = turns::tick_begin();
     let want = with_kernel_locked(|k| k.increment_tick()).unwrap_or(false);
     if STARTED.load(Ordering::Relaxed) {
         TICK_HOOKS.fetch_add(1, Ordering::Relaxed);
@@ -449,7 +467,231 @@ extern "C" fn on_tick() -> bool {
     // ran, so a task one of them woke is not in `want` -- and a wake-up
     // dropped here is a task that stays ready and unscheduled until
     // something else happens to yield.
-    want || abi::take_isr_woke()
+    let woke = want || abi::take_isr_woke();
+    // Two cores: bank core 0's switch and ask the port to pass the turn.
+    #[cfg(feature = "smp")]
+    let woke = turns::tick_end(running_as, woke);
+    woke
+}
+
+/// Two cores on a port that runs one task thread at a time.
+///
+/// The host port hands out ONE run permit. Two cores are made by giving
+/// that permit to each core in turn: the port records which core it stands
+/// for ([`rusty_rtos_port_host::set_core`], read back as
+/// `portGET_CORE_ID()`), and every tick passes the turn to the other core.
+/// The kernel underneath runs every two-core path -- a current task per
+/// core, selection that skips the task the other core holds, cross-core
+/// yields -- and is still never entered by two threads at once, so the
+/// seam needs no new locking. What it does NOT model is two cores truly
+/// overlapping in time; a turn is a tick long.
+///
+/// A switch a core is owed while it does not hold the permit -- the tick's
+/// own (`xTaskIncrementTick` answering `pdTRUE` for core 0) or a cross-core
+/// request (`prvYieldCore`, which the kernel leaves in
+/// `take_core_yields`) -- is banked here and taken when that core's turn
+/// comes round, as an interrupt to a core waits for the core.
+#[cfg(feature = "smp")]
+mod turns {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    use rusty_rtos_core::handle::TaskHandle;
+    use rusty_rtos_core::port::Port as _;
+    use rusty_rtos_port_host::{core, set_core};
+
+    use super::{K, PORT};
+
+    /// A switch owed to each core and not yet taken.
+    static OWED: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
+    /// Turns each core has been handed.
+    pub(crate) static TURNS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+    /// Ticks that left the turn where it was: the scheduler was suspended.
+    pub(crate) static HELD_BY_TASK_LOCK: AtomicU64 = AtomicU64::new(0);
+    /// Switches each core made.
+    pub(crate) static SWITCHES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+    /// Which task each core held when a turn reached it, by slot.
+    #[allow(clippy::declare_interior_mutable_const)]
+    const NONE: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static HELD: [[AtomicU64; super::TASKS]; 2] =
+        [[NONE; super::TASKS], [NONE; super::TASKS]];
+
+    /// Bank the cross-core yields the kernel has asked for.
+    pub(crate) fn collect(k: &mut K) {
+        let bits = k.take_core_yields();
+        for (c, owed) in OWED.iter().enumerate() {
+            if bits & (1 << c) != 0 {
+                owed.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Set by a task whose top-level kernel call has returned.
+    static PASS: AtomicBool = AtomicBool::new(false);
+    /// Turns passed that way, at a kernel call's return rather than a tick.
+    pub(crate) static PASSED_AT_CALL: AtomicU64 = AtomicU64::new(0);
+
+    /// A turn is ONE top-level kernel call: its return passes the permit.
+    ///
+    /// Two cores run at once; one permit cannot. What it can do is
+    /// interleave them finely enough that nothing a task does between two
+    /// kernel calls is overtaken by a whole tick of the other core -- and
+    /// the boundary that makes sense is the one the C oracle's two-core
+    /// harness uses: the return of a top-level call (ORACLES.md, the
+    /// two-core sim contract).
+    ///
+    /// Both coarser rules were tried and measured, and both fail the demos
+    /// for the same reason -- one core races a whole tick ahead of the
+    /// other:
+    ///
+    /// * turns only at the tick: `TimerDemo` starts a timer and checks it on
+    ///   the next line ("this task is running at a priority below the timer
+    ///   service task"), the daemon was readied onto the OTHER core, and that
+    ///   core had not run (`TimerDemo.c:469`, `:829`);
+    /// * passing only when the other core is owed a switch: GenQTest's
+    ///   `xBlockWasAborted` handshake. The high task's failed take asks the
+    ///   low task's core to reschedule, the turn went straight back, and the
+    ///   low task re-set the flag before the high task had read it
+    ///   (`GenQTest.c:564`, five runs of five).
+    ///
+    /// Only from a task, only at the outermost return, and never from the
+    /// tick: the tick passes the turn itself.
+    pub(crate) fn after_call() {
+        if PORT.in_isr() || rusty_rtos_port_host::my_index().is_none() {
+            return;
+        }
+        if rusty_rtos_port_host::critical_depth().0 {
+            return;
+        }
+        PASS.store(true, Ordering::SeqCst);
+        super::yield_now();
+    }
+
+    /// The scheduler: the core holding the permit switches -- or, called
+    /// from the tick or by [`after_call`], the permit passes to the other
+    /// core, which takes any switch it is owed first.
+    pub(crate) fn pick(k: &mut K) -> TaskHandle {
+        collect(k);
+        let here = usize::from(core());
+        let passing = PASS.swap(false, Ordering::SeqCst);
+        if passing && !PORT.in_isr() {
+            PASSED_AT_CALL.fetch_add(1, Ordering::Relaxed);
+        }
+        let c = if PORT.in_isr() || passing {
+            census(k, here);
+            // The task lock. On two cores `vTaskSuspendAll` holds
+            // `portGET_TASK_LOCK` until `xTaskResumeAll`, so the other core
+            // cannot enter the kernel meanwhile -- and the interrupted task
+            // here may be frozen anywhere inside its suspension. Passing the
+            // turn then would let the other core run kernel calls against a
+            // scheduler it does not hold suspended, and decline the very
+            // switch it was owed (`vTaskSwitchContext` re-pends under a
+            // suspended scheduler) while leaving its task marked as asked to
+            // yield, so the tick never asks again: measured, core 1 kept one
+            // never-blocking task for 4,928 of 5,000 turns. The turn stays
+            // until the suspension ends, as the C oracle's two-core harness
+            // also rules.
+            if k.scheduler_suspended() != 0 {
+                HELD_BY_TASK_LOCK.fetch_add(1, Ordering::Relaxed);
+                return k.current();
+            }
+            // The interrupted core owes a switch -- the tick woke a task
+            // for it: it takes the switch NOW, as a tick interrupt does on a
+            // chip, rather than after a turn of the other core. Measured:
+            // `StreamBufferDemo`'s trigger-level receive, woken at its
+            // five-tick timeout onto the core the tick had interrupted, ran
+            // a tick late with six bytes (`xAllowableMargin` is 0).
+            if PORT.in_isr() && OWED[here].swap(false, Ordering::SeqCst) {
+                SWITCHES[here].fetch_add(1, Ordering::Relaxed);
+                k.switch_context();
+                census(k, here);
+                return k.current();
+            }
+            let other = 1 - here.min(1);
+            set_core(other as u8);
+            TURNS[other].fetch_add(1, Ordering::Relaxed);
+            if OWED[other].swap(false, Ordering::SeqCst) {
+                SWITCHES[other].fetch_add(1, Ordering::Relaxed);
+                k.switch_context();
+            }
+            census(k, other);
+            return k.current();
+        } else {
+            OWED[here].store(false, Ordering::SeqCst);
+            here
+        };
+        SWITCHES[c].fetch_add(1, Ordering::Relaxed);
+        k.switch_context();
+        k.current()
+    }
+
+    /// The idle tasks' slots, set once the scheduler has made them.
+    pub(crate) static IDLE: [AtomicU64; 2] = [AtomicU64::new(u64::MAX), AtomicU64::new(u64::MAX)];
+    /// Turns at which the KERNEL had this core running a task that is not
+    /// an idle task.
+    pub(crate) static BUSY: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+
+    /// What the kernel itself says `core` is running as its turn begins --
+    /// `pxCurrentTCBs[ core ]`, read from the kernel and not from this
+    /// cell's own bookkeeping. The cell's turn counters cannot tell a two-
+    /// core run from a one-core run that passes the permit about: with the
+    /// port poisoned to answer core 0 always, they read healthy and every
+    /// demo passed, while the kernel ran one core. This can tell.
+    fn census(k: &K, core: usize) {
+        let slot = k.current_on(core).index();
+        if let Some(n) = HELD[core].get(slot as usize) {
+            n.fetch_add(1, Ordering::Relaxed);
+        }
+        let idle = IDLE
+            .iter()
+            .any(|i| i.load(Ordering::Relaxed) == u64::from(slot));
+        if !idle {
+            BUSY[core].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// The tick is core 0's: run it as core 0, and remember which core the
+    /// interrupted task was running as.
+    pub(crate) fn tick_begin() -> u8 {
+        let running_as = core();
+        set_core(0);
+        running_as
+    }
+
+    /// Bank what the tick asked for, put the interrupted core back, and ask
+    /// the port to pass the turn -- every tick, whether or not anything
+    /// switched, so the other core gets the next one.
+    pub(crate) fn tick_end(running_as: u8, core0_switch: bool) -> bool {
+        if core0_switch {
+            OWED[0].store(true, Ordering::SeqCst);
+        }
+        let _ = super::with_kernel_locked(collect);
+        set_core(running_as);
+        true
+    }
+
+    /// The turn slice: the port's interrupt with no tick in it.
+    ///
+    /// A turn also ends at every top-level kernel call ([`after_call`]) --
+    /// but a task that makes no kernel calls (`integer.c`, `flop.c`: pure
+    /// arithmetic, by design) would otherwise keep the permit until the next
+    /// TICK, and the other core would sit a whole tick behind. On a chip it
+    /// does not: it runs. Measured, `StreamBufferDemo`'s trigger-level test
+    /// then found its timed receive woken on time and served a tick late,
+    /// with one byte too many, and its checker stopped counting (three runs
+    /// of three). This slices the turn finer than the tick, without moving
+    /// the kernel's clock: it only passes the permit.
+    pub(crate) extern "C" fn slice() -> bool {
+        super::STARTED.load(Ordering::Relaxed)
+    }
+
+    /// Each core's first task: the C's first `vTaskSwitchContext` on each.
+    pub(crate) fn first(k: &mut K) -> TaskHandle {
+        set_core(1);
+        k.switch_context();
+        set_core(0);
+        k.switch_context();
+        k.current()
+    }
 }
 
 static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -686,9 +928,10 @@ extern "C" fn monitor(_: usize) -> ! {
         abi::EXPIRIES_LOST.load(Ordering::Relaxed)
     );
     println!(
-        "CAPI tick hooks run={}  preemptive={PREEMPTIVE}  orphaned threads={}",
+        "CAPI tick hooks run={}  preemptive={PREEMPTIVE}  orphaned threads={}  stale slot states cleared={}",
         TICK_HOOKS.load(Ordering::Relaxed),
-        rusty_rtos_port_host::orphaned_threads()
+        rusty_rtos_port_host::orphaned_threads(),
+        rusty_rtos_port_host::stale_grants()
     );
     println!();
 
@@ -782,6 +1025,46 @@ extern "C" fn monitor(_: usize) -> ! {
     } else {
         println!("      ok    the kernel switched {switches} times");
     }
+    // Two cores: both must have run. A core that never got the permit, or
+    // got it and never switched, is a one-core run under a two-core name.
+    #[cfg(feature = "smp")]
+    for (name, why) in demos::NOT_ON_TWO_CORES {
+        println!("      --    {name:<16} not run on two cores: {why}");
+    }
+    #[cfg(feature = "smp")]
+    println!(
+        "            turns kept by the task lock (scheduler suspended): {}; passed at a call's return: {}",
+        turns::HELD_BY_TASK_LOCK.load(Ordering::Relaxed),
+        turns::PASSED_AT_CALL.load(Ordering::Relaxed)
+    );
+    #[cfg(feature = "smp")]
+    for c in 0..2 {
+        let turns = turns::TURNS[c].load(Ordering::Relaxed);
+        let made = turns::SWITCHES[c].load(Ordering::Relaxed);
+        let busy = turns::BUSY[c].load(Ordering::Relaxed);
+        if turns == 0 || made == 0 || busy == 0 {
+            failed += 1;
+            println!(
+                "      FAIL  core {c}: {turns} turns, {made} switches, {busy} with a task -- the kernel never ran it"
+            );
+        } else {
+            println!("      ok    core {c}: {turns} turns, {made} switches, the kernel had it on a task at {busy}");
+        }
+        // What it was running when its turns came: the three it held most.
+        let mut held: Vec<(u64, usize)> = turns::HELD[c]
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.load(Ordering::Relaxed), i))
+            .filter(|&(n, _)| n > 0)
+            .collect();
+        held.sort_unstable_by(|a, b| b.cmp(a));
+        for &(n, i) in held.iter().take(3) {
+            let name = with_kernel(|k| k.task_at(i).and_then(|h| k.name_of(h).ok()))
+                .flatten()
+                .map_or_else(|| "?".to_owned(), |n| n.as_str().to_owned());
+            println!("              held {name:<16} at {n} of its turns");
+        }
+    }
 
     if no_verdict > 0 {
         // Not a pass and not a failure: these files have no checker to ask.
@@ -792,10 +1075,19 @@ extern "C" fn monitor(_: usize) -> ! {
     println!();
     if failed == 0 {
         println!(
-            "RESULT: PASS -- {ran} unmodified C demo file(s) on the Kairos kernel, on OS threads."
+            "RESULT: PASS -- {ran} unmodified C demo file(s) on the Kairos kernel, on OS threads{}.",
+            if cfg!(feature = "smp") {
+                ", on TWO cores (every file the C passes on two cores, and four it never ran)"
+            } else {
+                ""
+            }
         );
         std::process::exit(0);
     }
+    // Which task stopped is the first question a failed checker leaves, and
+    // the kernel's table answers it.
+    abi::report_tasks();
+    report_turns();
     println!("RESULT: FAIL -- {failed} check(s) failed");
     std::process::exit(1);
 }
@@ -1042,8 +1334,23 @@ fn main() {
         println!("idle or timer fell outside the slot table");
         std::process::exit(1);
     }
+    // Two cores, two idle tasks: the second is core 1's (`passive_idle`).
+    #[cfg(feature = "smp")]
+    {
+        turns::IDLE[0].store(u64::from(started.idle.index()), Ordering::Relaxed);
+        turns::IDLE[1].store(u64::from(started.passive_idle.index()), Ordering::Relaxed);
+    }
+    #[cfg(feature = "smp")]
+    if !arm_task(started.passive_idle, idle) {
+        println!("the second idle task fell outside the slot table");
+        std::process::exit(1);
+    }
 
-    let Some(first) = with_kernel(|k| k.current()) else {
+    #[cfg(not(feature = "smp"))]
+    let first = with_kernel(|k| k.current());
+    #[cfg(feature = "smp")]
+    let first = with_kernel(turns::first);
+    let Some(first) = first else {
         println!("the kernel named no first task");
         std::process::exit(1);
     };
@@ -1054,6 +1361,9 @@ fn main() {
     // `CapiConfig::TICK_RATE_HZ` is 1000: `pdMS_TO_TICKS` in the C and
     // `delay` in the Rust have to mean the same duration.
     Ticker::new(Duration::from_millis(1), on_tick).spawn();
+    // Two cores: the turn slice, five times a tick (see `turns::slice`).
+    #[cfg(feature = "smp")]
+    Ticker::new(Duration::from_micros(200), turns::slice).spawn();
 
     println!("starting the first task ({})...", first.index() as usize);
     start_first_task(first.index() as usize);

@@ -5,6 +5,57 @@ without a method is not a number. Counters before clocks; an external oracle
 before a self-metric; the method line names the machine, the pinning, the arm
 order and the null-arm floor for anything timed.
 
+## Two cores, and the cells back on today's kernel (2026-10-04)
+
+**Method.** `hosted/capi-host`, `KAIROS_CAPI_TICKS=30000` (three checker
+samples), Windows 11 (MSVC) and WSL Ubuntu (gcc 15.2, pthreads), on a box at
+~84% CPU from other work; the QEMU Cortex-M3 cell at its default length.
+Every verdict is the demo file's own checker. Kernel 2416bd8, port with the
+two changes below.
+
+| cell | demos | runs passed |
+|---|---:|---:|
+| one core, Windows | 25 | 3 / 3 |
+| one core, Linux | 25 | 3 / 3 (5 / 5 in the A/B below) |
+| one core, QEMU Cortex-M3 | 25 | 1 / 1 |
+| **two cores**, Windows | 17 | 3 / 3 |
+| **two cores**, Linux | 17 | 5 / 5 |
+| two cores, port poisoned to report core 0 always | 17 | **0 / 1** -- core 1 "never ran" |
+
+**The cells had not compiled since the kernel moved.** The kernel type gained
+its timer-command const generic, a handle's index widened to u32 (`usize::from`
+is defined only from u16), `items_for` became `list_slots_for`, and the
+Cortex-M port's `init_stack` became `unsafe fn`. Fixed (63b21d9); the
+generated header is unchanged -- the 32-bit-only header on the
+`wip/32bit-header-types` branch would break the 64-bit hosts and is not taken.
+
+**A Linux-only host-port defect, found by the two-core work and present on
+one core.** One-core Linux, 30,000 ticks, before: 3 of 3 runs broke the
+identity check ("this thread is task 77, the kernel believes 43": SUICID1
+running while CREATOR was current), one failing outright. A slot reused by
+`death.c` kept its last occupant's run permit and freeze when the tick had
+frozen that thread between grant and take. Interleaved A/B on one binary pair
+under the same load: clearing only the grant -> `TimerDemo.c:1132` in 4 of 4
+(the stale freeze turned the next grant into a thaw of nothing); not
+clearing -> one stale grant and one identity break per run. Clearing both:
+5 of 5 pass, 0 identity breaks, the case met in 4 of 5 runs.
+
+**Two cores, and why seventeen.** The permit passes at every top-level
+kernel call's return (the C oracle's two-core turn rule), at every tick, and
+on a 200 µs slice, and a tick that owes the interrupted core a switch takes
+it there. Two coarser rules were measured and rejected: turns only at the
+tick passed all 25 -- by hiding the overlap -- and passing only on an owed
+cross-core yield failed `GenQTest.c:564` five of five. With the fine rule
+the files FreeRTOS itself fails on two cores fail here too, at the same
+lines (`GenQTest.c:564` reproduced; the C oracle's two-core verdicts are
+`rusty_rtos_demo`'s `smp_conformance` pins); they are excluded by name with
+the C's verdict, and `death.c` as undefined on two cores. One setting
+differs: `configSTREAM_BUFFER_TRIGGER_LEVEL_TEST_MARGIN 1` -- with 0,
+`StreamBufferDemo` beside `flop`/`flash` had 17-22 trigger receives a tick
+late per run and never two; with 1 it passes. Without it the late receive is
+the host OS waking a thread, not the kernel: the bytes match the blocked
+ticks exactly.
+
 ## The build fact (2026-09-09)
 
 | gate | result |

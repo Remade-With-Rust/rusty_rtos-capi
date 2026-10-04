@@ -36,3 +36,10 @@ overflow-checks = true
 #
 #   cargo run --release --features amp
 amp = []
+
+# Two cores, virtual: one run permit passed between two kernel cores every
+# tick (`turns` in src/main.rs), and the C compiled with
+# `configNUMBER_OF_CORES 2`. The two-core C ABI run (umbrella HOLES.md H15).
+#
+#   cargo run --release --features smp
+smp = []

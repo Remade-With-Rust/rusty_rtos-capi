@@ -189,11 +189,44 @@ pub(crate) const ONLY: Option<&str> = option_env!("KAIROS_CAPI_ONLY");
 /// files by hand is five runs; bisecting them one at a time is twenty.
 #[must_use]
 pub(crate) fn selected(name: &str) -> bool {
+    if cfg!(feature = "smp") && NOT_ON_TWO_CORES.iter().any(|(n, _)| *n == name) {
+        return false;
+    }
     let Some(only) = ONLY else {
         return true;
     };
     only.split(',').any(|want| want.trim() == name)
 }
+
+/// The demo files the C kernel ITSELF does not pass on two cores, and why.
+///
+/// Each verdict is FreeRTOS V11.3.1's own, with `configNUMBER_OF_CORES 2`
+/// and `configRUN_MULTIPLE_PRIORITIES 1`, from the umbrella's two-core
+/// oracle corpus (`oracle/harness-smp`; the pins in `rusty_rtos_demo`'s
+/// `tests/smp_conformance.rs`). These files assume ONE core -- a task
+/// resumed at a higher priority has run by the next statement; a medium
+/// task cannot run while a low one holds an inherited high priority
+/// (GenQTest's `ulGuardedVariable`) -- and on two cores the readied task
+/// simply takes the other core. A two-core run that "passed" them would be
+/// passing a property FreeRTOS does not have; the coarse first version of
+/// this cell did exactly that, by running each core for a whole tick and
+/// so hiding the overlap.
+pub(crate) const NOT_ON_TWO_CORES: &[(&str, &str)] = &[
+    ("AbortDelay", "the C's own checker fails on two cores"),
+    (
+        "EventGroups",
+        "the C asserts at EventGroupsDemo.c:260 on two cores",
+    ),
+    ("GenQTest", "the C asserts at GenQTest.c:564 on two cores"),
+    ("QPeek", "the C's own checker fails on two cores"),
+    ("blocktim", "the C's own checker fails on two cores"),
+    ("recmutex", "the C asserts at recmutex.c:330 on two cores"),
+    ("TimerDemo", "the C asserts at TimerDemo.c:427 on two cores"),
+    (
+        "death",
+        "undefined in the C on two cores: SUICID1 can delete the previous cycle's freed TCB",
+    ),
+];
 
 /// The priorities are **the real demo's**, from `Demo/Posix_GCC/main_full.c`:
 ///

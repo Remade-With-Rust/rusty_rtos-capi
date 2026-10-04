@@ -147,6 +147,12 @@ fn main() {
     // every clang reject the option name itself.
     build.flag_if_supported("-Wno-error=return-mismatch");
 
+    // `--features smp`: the same files, compiled for `configNUMBER_OF_CORES 2`
+    // (`capi/FreeRTOSConfig.h` keys on this).
+    if std::env::var_os("CARGO_FEATURE_SMP").is_some() {
+        build.define("KAIROS_CAPI_SMP", "1");
+    }
+
     for d in DEMOS {
         build.file(minimal.join(format!("{d}.c")));
     }

@@ -81,6 +81,41 @@
  * trips one is telling us the ABI lied to it, and that is the single most
  * valuable signal this cell can produce -- far better than a wrong answer
  * arriving quietly. */
+/* Two cores (`cargo run --features smp`, umbrella HOLES.md H15).
+ *
+ * The C here is the demo files only -- the kernel is Kairos -- so the SMP
+ * port macros FreeRTOS.h demands are reached only through the task.h macros
+ * the demos expand. The interrupt-mask pair keeps the meaning the one-core
+ * build gives it; the core id and the cross-core yield name functions this
+ * cell does not define, so a demo that ever expanded one would fail to LINK
+ * rather than quietly read core 0. The task and ISR locks are the kernel's
+ * business, and the kernel is not this C. */
+#ifdef KAIROS_CAPI_SMP
+    #define configNUMBER_OF_CORES                   2
+    #define configUSE_PASSIVE_IDLE_HOOK             0
+    #define configRUN_MULTIPLE_PRIORITIES           1
+    #define configUSE_CORE_AFFINITY                 0
+    #define configUSE_PORT_OPTIMISED_TASK_SELECTION 0
+    /* StreamBufferDemo's trigger-level receive asserts its byte count with
+     * a margin of 0 by default, and names this setting for a platform where
+     * a woken task can be served a tick late. Two virtual cores on a host
+     * are such a platform: the woken task's OS thread must be scheduled
+     * again before its call can return, and under load that can cross the
+     * one-millisecond wall-clock tick (measured: 17 to 22 receives a tick
+     * late per 30,000 ticks, never two). One-core build: unchanged, 0. */
+    #define configSTREAM_BUFFER_TRIGGER_LEVEL_TEST_MARGIN 1
+    #define portGET_CORE_ID()                       xCapiNotACoreId()
+    #define portYIELD_CORE( x )                     vCapiNotACoreYield( x )
+    #define portSET_INTERRUPT_MASK()                0
+    #define portCLEAR_INTERRUPT_MASK( x )           ( void ) ( x )
+    #define portENTER_CRITICAL_FROM_ISR()           portSET_INTERRUPT_MASK_FROM_ISR()
+    #define portEXIT_CRITICAL_FROM_ISR( x )         portCLEAR_INTERRUPT_MASK_FROM_ISR( x )
+    #define portGET_TASK_LOCK( xCoreID )
+    #define portRELEASE_TASK_LOCK( xCoreID )
+    #define portGET_ISR_LOCK( xCoreID )
+    #define portRELEASE_ISR_LOCK( xCoreID )
+#endif
+
 #include <stdint.h>
 extern void vCapiAssertFailed( const char * file, uint32_t line );
 #define configASSERT( x )    if( ( x ) == 0 ) { vCapiAssertFailed( __FILE__, __LINE__ ); }

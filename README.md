@@ -51,6 +51,37 @@ Every verdict below is the demo file's own check function, not ours.
 | host, Windows threads | 25/25 | **25/25** | **25/25**, 3 runs of 3 |
 | host, Linux pthreads | 25/25 | **25/25** | **25/25**, 3 runs of 3 |
 | `MessageBufferAMP`, its own binary | **1/1** | — | — |
+| **two cores**, host, Windows threads | — | **17/17** | **17/17**, 3 runs of 3 |
+| **two cores**, host, Linux pthreads | — | **17/17** | **17/17**, 5 runs of 5 |
+
+Sustained is 30,000 ticks, three checks; re-measured 2026-10-04 on the
+kernel and port of that date. The Linux row had stopped holding before then:
+the host port let a reused task slot keep its last occupant's permit or
+freeze, which `death.c` reaches (fixed in `rusty_rtos_port-host`).
+
+**Two cores** (`hosted/capi-host`, `--features smp`): the same unmodified
+files compiled with `configNUMBER_OF_CORES 2` and run on the two-core Kairos
+kernel. The host port's one run permit is passed between the two kernel
+cores at every top-level kernel call's return -- the boundary the C oracle's
+two-core harness uses -- at every tick, and on a 200 µs slice; the kernel
+runs every two-core path (a current task per core, cross-core yields,
+selection that skips the other core's task) and is never entered by two
+threads at once. Both cores must have been running a non-idle task by the
+KERNEL's own `pxCurrentTCBs`, or the run fails: a poisoned port that answers
+core 0 always fails it.
+
+Seventeen, not twenty-five, because eight of these files do not pass on two
+cores in FreeRTOS either. The C kernel's own two-core verdicts
+(`rusty_rtos_demo`'s `smp_conformance` pins): `GenQTest.c:564`,
+`recmutex.c:330`, `TimerDemo.c:427` and `EventGroupsDemo.c:260` assert, and
+AbortDelay, QPeek and blocktim fail their checkers -- they assume one core
+(a resumed higher-priority task has run by the next statement; a medium task
+cannot run while a low one holds an inherited priority). `death.c` is
+undefined in the C on two cores. The cell names all eight and why. One
+setting differs from the one-core build:
+`configSTREAM_BUFFER_TRIGGER_LEVEL_TEST_MARGIN 1`, the knob
+`StreamBufferDemo.c` provides for a platform where a woken task can be
+served a tick late, which a woken thread on a loaded host is.
 
 `flash.c` also runs and is deliberately **not** in those numbers: it exports a
 start function and no checker, so there is no verdict of its own to report and
