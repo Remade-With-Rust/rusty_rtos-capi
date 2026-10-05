@@ -38,32 +38,32 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "rusty_rtos-capi-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rusty_rtos_core",
 ]
 
 [[package]]
 name = "rusty_rtos_core"
-version = "0.1.0"
+version = "0.2.5"
 
 [[package]]
 name = "rusty_rtos_heap-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rusty_rtos_core",
 ]
 
 [[package]]
 name = "rusty_rtos_kernel-core"
-version = "0.1.0"
+version = "0.3.3"
 dependencies = [
  "rusty_rtos_core",
 ]
 
 [[package]]
 name = "rusty_rtos_port-host"
-version = "0.1.0"
+version = "0.3.2"
 dependencies = [
  "libc",
  "rusty_rtos_core",
