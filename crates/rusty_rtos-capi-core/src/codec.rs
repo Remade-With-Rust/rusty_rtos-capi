@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn generation_zero_is_the_null_handle_at_every_index() {
-        for index in [0u16, 1, 7, Handle::<Task>::MAX_INDEX] {
+        for index in [0u32, 1, 7, Handle::<Task>::MAX_INDEX] {
             assert!(T::from_parts(index, 0).is_null(), "index {index}");
         }
     }
@@ -179,10 +179,10 @@ mod tests {
 
     #[test]
     fn every_handle_round_trips() {
-        for index in [0u16, 1, 2, 95, 1000, Handle::<Task>::MAX_INDEX] {
+        for index in [0u32, 1, 2, 95, 1000, Handle::<Task>::MAX_INDEX] {
             // Generation 1 upward: zero is the null handle, which round
             // trips through `None` and is covered by its own test.
-            for generation in [1u16, 7, u16::MAX] {
+            for generation in [1u32, 7, u32::from(u16::MAX)] {
                 let h = T::from_parts(index, generation);
                 let c = handle_to_c(h);
                 assert_eq!(handle_from_c::<Task>(c), Some(h), "{index}/{generation}");
